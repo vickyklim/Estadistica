@@ -1,0 +1,622 @@
+---
+title: "TP Estadística"
+author: "de Erausquin, Fernández, Klimkowski"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+```{r, include=FALSE}
+library(plotly)
+```
+```{r, echo = FALSE}
+set.seed(12618)
+```
+
+# 2 c
+
+
+
+```{r, echo = FALSE}
+n <- 100
+p <- seq(0.001, 0.999, length.out = 1000)
+meanYs <- seq(0.001, 0.999, length.out = 50)
+
+meanY0 <- meanYs[1]
+lp0 <- n * meanY0 * log(p) + (n - n * meanY0) * log(1 - p)
+lp_at_1_6 <- n * meanY0 * log(1/6) + (n - n * meanY0) * log(1 - 1/6)
+lp_at_5_6 <- n * meanY0 * log(5/6) + (n - n * meanY0) * log(1 - 5/6)
+lp0_trunc <- lp0
+lp0_trunc[p < 1/6] <- lp_at_1_6
+lp0_trunc[p > 5/6] <- lp_at_5_6
+
+
+p_left <- p[p <= 1/6]; lp_left <- lp0[p <= 1/6]
+p_middle <- p[p > 1/6 & p < 5/6]; lp_middle <- lp0[p > 1/6 & p < 5/6]
+p_right <- p[p >= 5/6]; lp_right <- lp0[p >= 5/6]
+
+fig <- plot_ly() %>%
+  add_trace(x = p_left, y = lp_left, type = "scatter", mode = "lines",
+            line = list(dash = "dot"), name = "Fuera intervalo") %>%
+  add_trace(x = p_middle, y = lp_middle, type = "scatter", mode = "lines",
+            line = list(dash = "solid"), name = "Dentro intervalo") %>%
+  add_trace(x = p_right, y = lp_right, type = "scatter", mode = "lines",
+            line = list(dash = "dot"), name = "Fuera intervalo") %>%
+  # punto rojo: meanY
+  add_trace(
+    x = c(meanY0),
+    y = c(max(lp0)),
+    type = "scatter", mode = "markers",
+    marker = list(color = "red", size = 10),
+    name = "Ȳ", showlegend = TRUE
+  ) %>%
+  # punto azul: phat truncado
+  add_trace(
+    x = c(1/6),
+    y = c(max(lp0_trunc)),
+    type = "scatter", mode = "markers",
+    marker = list(color = "blue", size = 7),
+    name = "p_MV", showlegend = TRUE
+  )
+
+frames <- lapply(meanYs, function(meanY) {
+  lp <- n * meanY * log(p) + (n - n * meanY) * log(1 - p)
+  lp_1_6 <- n * meanY * log(1/6) + (n - n * meanY) * log(1 - 1/6)
+  lp_5_6 <- n * meanY * log(5/6) + (n - n * meanY) * log(1 - 5/6)
+  lp_trunc <- lp
+  lp_trunc[p < 1/6] <- lp_1_6
+  lp_trunc[p > 5/6] <- lp_5_6
+  
+  if (meanY < 1/6) {
+    phat_x <- 1/6
+  } else if (meanY > 5/6) {
+    phat_x <- 5/6
+  } else {
+    phat_x <- meanY
+  }
+  
+  list(
+    name = paste0("meanY=", round(meanY, 3)),
+    traces = list(0, 1, 2, 3, 4),
+    data = list(
+      list(x = p[p <= 1/6], y = lp[p <= 1/6]),
+      list(x = p[p > 1/6 & p < 5/6], y = lp[p > 1/6 & p < 5/6]),
+      list(x = p[p >= 5/6], y = lp[p >= 5/6]),
+      list(x = list(meanY), y = list(max(lp))),  # promedio actualizado
+      list(x = list(phat_x),  y = list(max(lp_trunc)))  # punto azul: phat
+
+    )
+  )
+})
+
+fig$x$frames <- frames
+
+fig <- fig %>%
+  layout(
+    title = "Log-verosimilitud l(p)",
+    xaxis = list(title = "p", range = c(0, 1)),
+    yaxis = list(
+      range = c(-500, 10),
+      showticklabels = FALSE,  # numeros del eje
+      showline = FALSE,       
+      zeroline = FALSE,        
+      title = ""               # borra el título del eje y
+    ),
+    sliders = list(
+      list(
+        active = 0,
+        steps = lapply(seq_along(frames), function(i) {
+          list(
+            label = frames[[i]]$name,
+            method = "animate",
+            args = list(list(frames[[i]]$name),
+                        list(mode = "immediate",
+                             frame = list(duration = 0, redraw = TRUE),
+                             transition = list(duration = 0)))
+          )
+        }),
+        currentvalue = list(prefix = "meanY: ")
+      )
+    )
+  )
+
+fig
+```
+
+# 2d
+
+
+```{r, include=FALSE}
+
+tita <- 1/4
+p_real <- 1/6 + 2/3 * tita
+Nrep <- 10000
+n_vals <- c(1, 2, 3, 4, 5, 10, 20, 30, 40, 50, 60, 100, 200, 300, 400, 500, 1000, 1500, 2000)
+sesgos <- numeric(length(n_vals))
+
+esperanza_p <- function(n, p_real, k_esimo_momento = 1) {
+  
+  si_promedio_menor_o_igual_a_un_sexto <- function(n, p_real, k_esimo_momento = 1) {
+    k <- floor(n / 6)
+    return(((1/6)**k_esimo_momento) * pbinom(k, size = n, prob = p_real))
+  }
+  
+  si_promedio_entre_un_sexto_y_cinco_sextos <- function(n, p_real, k_esimo_momento = 1) {
+    lower <- floor(n / 6) + 1
+    upper <- ceiling(5 * n / 6) - 1
+    if (lower > upper) return(0)
+    k_vals <- lower:upper
+    probs <- dbinom(k_vals, size = n, prob = p_real)
+    pesos <- (k_vals / n) ** k_esimo_momento
+    
+    return(sum(probs * pesos))
+  }
+
+  
+  si_promedio_mayor_o_igual_a_cinco_sextos <- function(n, p_real, k_esimo_momento = 1) {
+    lower <- ceiling(5 * n / 6)
+    return(((5/6)**k_esimo_momento) * (1 - pbinom(lower - 1, size = n, prob = p_real)))
+  }
+  
+  return(
+    si_promedio_menor_o_igual_a_un_sexto(n, p_real, k_esimo_momento) +
+    si_promedio_entre_un_sexto_y_cinco_sextos(n, p_real, k_esimo_momento) +
+    si_promedio_mayor_o_igual_a_cinco_sextos(n, p_real, k_esimo_momento)
+  )
+}
+
+esperanza_tita <- function(n, p_real) {
+  return ((3/2) * (esperanza_p(n, p_real, 1) - 1/6))
+}
+
+
+for (i in seq_along(n_vals)) {
+  n <- n_vals[i]
+  estimadores <- numeric(Nrep)
+  sesgos[i] <- esperanza_tita(n, p_real) - tita
+}
+```
+
+```{r, include=FALSE}
+plot(n_vals, sesgos, type = "b", col = "blue", pch = 19,
+     xlab = "Tamaño muestral n", ylab = "Sesgo del estimador",
+     main = expression(paste("Sesgo vs n para ", theta == 1/4)))
+abline(h = 0, lty = 2, col = "gray")
+```
+
+
+```{r, echo=FALSE}
+fig <- plot_ly(
+  x = n_vals,
+  y = sesgos,
+  type = 'scatter',
+  mode = 'lines+markers',
+  line = list(color = 'blue'),
+  marker = list(color = 'blue')
+) %>%
+  layout(
+    title = list(
+      text = "Sesgo vs n para tita = 1/4"
+    ),
+    xaxis = list(title = "Tamaño muestral n"),
+    yaxis = list(title = "Sesgo del estimador"),
+    shapes = list(
+      list(
+        type = "line",
+        x0 = min(n_vals), x1 = max(n_vals),
+        y0 = 0, y1 = 0,
+        line = list(dash = 'dot', color = 'gray')
+      )
+    )
+  )
+
+fig
+
+```
+
+
+
+# 2 e
+
+
+
+```{r, include=FALSE}
+proba_pi <- 1/3
+p_y_clas <- (1 - proba_pi) * tita
+Nrep <- 10000 
+n_vals <- seq(2, 200, by = 2)
+ecm_aleatorizado <- numeric(length(n_vals))
+ecm_clas <- numeric(length(n_vals))
+
+
+ecm_aleat <- function(n, p_real){
+  sesgo_tita <- function(n, p_real){
+    return (esperanza_tita(n, p_real) - tita) 
+  }
+  
+  varianza_tita <- function(n, p_real){
+    return (((3/2)**2) * (esperanza_p(n, p_real, k_esimo_momento = 2) - esperanza_p(n, p_real)**2))
+  }
+  
+  return (varianza_tita(n, p_real) + sesgo_tita(n, p_real)**2)
+}
+
+for (i in seq_along(n_vals)) {
+  n <- n_vals[i]
+  
+  ecm_aleatorizado[i] <- ecm_aleat(n, p_real)
+  
+  muestras_clas <- rbinom(Nrep, n, p_y_clas)
+  promedios <- muestras_clas / n
+  ecm_clas[i] <- mean((promedios - tita)^2)
+}
+
+```
+
+```{r, include=FALSE}
+plot(n_vals, ecm_aleatorizado, type = "b", col = "blue", pch = 19, cex = 0.5,
+     ylim = range(c(ecm_aleatorizado, ecm_clas)),
+     xlab = "Tamaño muestral n", ylab = "ECM",
+     main = expression(paste("ECM de estimadores para ", theta == 1/4)))
+lines(n_vals, ecm_clas, type = "b", col = "red", pch = 17, cex = 0.5)
+legend("topright", legend = c("Aleatorizado", "Clásico"),
+       col = c("blue", "red"), pch = c(19, 17), cex = 0.8)
+
+```
+
+
+```{r, echo=FALSE}
+fig <- plot_ly() %>%
+  add_trace(
+    x = n_vals,
+    y = ecm_aleatorizado,
+    type = 'scatter',
+    mode = 'lines+markers',
+    name = 'Aleatorizado',
+    line = list(color = 'blue'),
+    marker = list(color = 'blue', symbol = 'circle', size = 5)
+  ) %>%
+  add_trace(
+    x = n_vals,
+    y = ecm_clas,
+    type = 'scatter',
+    mode = 'lines+markers',
+    name = 'Clásico',
+    line = list(color = 'red'),
+    marker = list(color = 'red', symbol = 'triangle-up', size = 5)
+  ) %>%
+  layout(
+    title = list(
+      text = "ECM de estimadores para tita = 1/4"
+    ),
+    xaxis = list(title = "Tamaño muestral n"),
+    yaxis = list(title = "ECM"),
+    legend = list(x = 1, y = 1) 
+  )
+
+
+fig
+
+```
+
+
+
+# 2 f
+
+```{r, include=FALSE}
+p <- seq(1/6, 5/6, length.out = 20000)
+
+l_diff <- -2 * 20 * log(p) - 2 * 80 * log(1 - p) + 
+          2 * 20 * log(20 / 100) + 2 * 80 * log(80 / 100)
+tita <- 3/2 * (p - 1/6)
+corte <- qchisq(1-0.05, df = 1)
+```
+
+
+```{r, include=FALSE}
+plot(tita, l_diff, type = "l", lwd = 2, col = "blue",
+     xlab = "θ", ylab = expression(-2*logLambda),
+     main = expression(paste("-2 log ", Lambda(θ))),
+     ylim = c(0, max(l_diff)))
+
+abline(h = qchisq(1-0.05, df = 1), col = "red", lty = 2, lwd = 2)
+
+legend("topright", legend = c("Estadístico", "Valor crítico 3.841"),
+       col = c("blue", "red"), lty = c(1, 2), lwd = 2)
+```
+
+
+```{r, echo = FALSE}
+fig <- plot_ly(x = ~tita, y = ~l_diff, type = 'scatter', mode = 'lines',
+               line = list(color = 'blue', width = 2),
+               name = "-2 log Lambda")
+
+# y = 3.841
+fig <- fig %>%
+  add_trace(x = ~range(tita), y = c(corte, corte), type = 'scatter', mode = 'lines',
+            line = list(color = 'red', dash = 'dash', width = 2),
+            name = "Valor crítico 3.841")
+
+
+fig <- fig %>%
+  layout(
+    title = "-2 log Lambda(θ)",
+    xaxis = list(title = "θ", zeroline = FALSE),
+    yaxis = list(title = "-2 log Lambda", range = c(0, max(l_diff))),
+    legend = list(x = 0.8, y = 0.95)
+  )
+
+fig
+```
+
+
+
+```{r, include=FALSE}
+tita <- 1/4
+proba_pi <- 1/3
+p_y_aleat <- 1/6 + 2/3 * tita
+p_y_clas <- (1 - proba_pi) * tita
+n_vals <- c(10,100,1000,2000,3000)
+Nrep <- 10000
+
+ecm_aleat <- numeric(length(n_vals))
+ecm_clas <- numeric(length(n_vals))
+
+for (i in seq_along(n_vals)) {
+  n <- n_vals[i]
+  
+  estim_aleat <- numeric(Nrep)
+  estim_clas <- numeric(Nrep)
+  
+  for (iter in 1:Nrep) {
+    
+    muestra_aleat <- rbinom(n, 1, p_y_aleat)
+    media_aleat <- mean(muestra_aleat)
+    estim_aleat[iter] <- min(1, max(0, 1.5 * (media_aleat - 1/6)))
+    
+    
+    muestra_clas <- rbinom(n, 1, p_y_clas)
+    estim_clas[iter] <- mean(muestra_clas)
+  }
+  
+  ecm_aleat[i] <- mean((estim_aleat - tita)^2)
+  ecm_clas[i] <- mean((estim_clas - tita)^2)
+}
+
+
+tabla_resultados <- data.frame(
+  n = n_vals,
+  ECM_Clasico = ecm_clas,
+  ECM_Aleat = ecm_aleat
+)
+
+print(tabla_resultados) 
+
+
+```
+```{r, include=FALSE}
+
+B <- 100000
+y <- c(rep(1, 20), rep(0, 80))
+alpha <- 0.05
+z_alpha_2 <- qnorm(1 - alpha/2)
+
+theta_hat <- function(sample) {
+  p_hat <- mean(sample)
+  theta <- min(1, max(0, 3/2 * (p_hat - 1/6)))
+  return(theta)
+}
+
+theta_bootstrap <- replicate(B, {
+  sample_y <- sample(y, size = 100, replace = TRUE)
+  theta_hat(sample_y)
+})
+
+
+IC_bootstrap <- quantile(theta_bootstrap, probs = c(alpha/2, 1 - alpha/2))
+
+sd_boot <- sd(theta_bootstrap)
+cota_inf <- theta_hat(y) - z_alpha_2 * sd_boot
+cota_sup <- theta_hat(y) + z_alpha_2 * sd_boot
+IC_bootstrap_2 <- c(max(0,cota_inf), min(1,cota_sup))
+```
+```{r, include=FALSE}
+print(IC_bootstrap)
+```
+```{r, include=FALSE}
+print(IC_bootstrap_2)
+```
+
+# 2i
+
+```{r, include=FALSE}
+calcular_nivel_empirico <- function(theta0 = 1/4, 
+                                    alpha = 0.05, 
+                                    B = 10000, 
+                                    n_vals = c(200, 300, 400, 500, 1000, 1500, 2000)) {
+  
+  crit_val <- qchisq(1 - alpha, df = 1)
+  p0 <- 1/6 + (2/3) * theta0
+  
+  computar_T <- function(y) {
+    n <- length(y)
+    S <- sum(y)
+    ybar <- S / n
+    p_hat <- min(5/6, max(1/6, ybar))
+    T <- - 2 * (S * log(1/3) + (n - S) * log(2/3) - S * log(p_hat) - (n - S) * (log(1 - p_hat)))
+    return(T)
+  }
+  
+  niveles_empiricos <- numeric(length(n_vals))
+  
+  for (i in seq_along(n_vals)) {
+    n <- n_vals[i]
+    
+    # B muestras de tamaño n bajo H0
+    muestras <- matrix(rbinom(n * B, size = 1, prob = p0), nrow = B, ncol = n)
+    T_vals <- apply(muestras, 1, computar_T)
+    
+    niveles_empiricos[i] <- mean(T_vals > crit_val)
+  }
+  
+  return(data.frame(n = n_vals, nivel_empirico = niveles_empiricos))
+}
+
+# n chicos
+n_pequenos <- 1:150
+resultado_pequenos <- calcular_nivel_empirico(n_vals = n_pequenos)
+
+# n grandes
+n_grandes <- c(200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000, 2500, 3000)
+resultado_grandes <- calcular_nivel_empirico(n_vals = n_grandes)
+
+n_comb <- c(n_pequenos, n_grandes)
+nivel_comb <- calcular_nivel_empirico(n_vals = n_comb)
+
+```
+```{r, include=FALSE}
+plot(resultado_pequenos$n, resultado_pequenos$nivel_empirico, type = "b", col = "darkgreen",
+     ylim = c(0, 0.12), xlab = "n (tamaño muestral)",
+     ylab = "Nivel empírico", main = "Nivel empírico vs n")
+abline(h = 0.05, col = "red", lty = 2)
+
+legend("topright", legend = c("n pequeños", "Alpha (0.05)"),
+       col = c("darkgreen", "red"), lty = c(1, 1, 2), pch = c(1, 1, NA))
+```
+```{r, echo=FALSE}
+plot(resultado_grandes$n, resultado_grandes$nivel_empirico, type = "b", col = "darkgreen",
+     ylim = c(0, 0.12), xlab = "n (tamaño muestral)",
+     ylab = "Nivel empírico", main = "Nivel empírico vs n")
+abline(h = 0.05, col = "red", lty = 2)
+
+legend("topright", legend = c("n grandes", "Alpha (0.05)"),
+       col = c("darkgreen", "red"), lty = c(1, 1, 2), pch = c(1, 1, NA))
+```
+
+
+```{r, echo=FALSE}
+fig <- plot_ly() %>%
+
+  add_trace(
+    x = nivel_comb$n,
+    y = nivel_comb$nivel_empirico,
+    type = 'scatter',
+    mode = 'lines+markers',
+    name = "n pequeños",
+    line = list(color = "darkgreen"),
+    marker = list(color = "darkgreen", symbol = 'circle', size = 6)
+  ) %>%
+
+  add_trace(
+    x = c(min(nivel_comb$n), max(nivel_comb$n)),
+    y = c(0.05, 0.05),
+    type = 'scatter',
+    mode = 'lines',
+    name = "Alpha (0.05)",
+    line = list(color = "red", dash = "dash")
+  ) %>%
+  layout(
+    title = "Nivel empírico vs n",
+    xaxis = list(title = "n (tamaño muestral)"),
+    yaxis = list(title = "Nivel empírico", range = c(0, 0.12)),
+    legend = list(x = 1, y = 1)  # Ajusta posición si quieres
+  )
+
+
+fig
+
+```
+
+# 2j
+```{r, include=FALSE}
+
+n <- 100
+B <- 10000
+alpha <- 0.05
+theta0 <- 1/4
+p0 <- 1/6 + (2/3) * (theta0)
+c_crit <- qchisq(1 - alpha, df = 1)
+
+p_vals <- sort(c(seq(1/6, 5/6, by = 0.01), 1/3))
+potencia <- numeric(length(p_vals))
+
+calc_aux_logver <- function(p, ybar) {
+  ybar * log(p) + (1 - ybar) * log(1 - p)
+}
+
+
+for (i in seq_along(p_vals)) {
+  p <- p_vals[i]
+  
+  stats <- replicate(B, {
+    y <- rbinom(n, 1, p)
+    ybar <- mean(y)
+    
+    p_hat <- min(5/6, max(1/6, ybar))
+    
+    stat <- - 2 * n * (calc_aux_logver(p0, ybar) - calc_aux_logver(p_hat, ybar))
+    stat
+  })
+  
+  potencia[i] <- mean(stats > c_crit)
+}
+```
+
+
+```{r, include=FALSE}
+
+plot(pmin(1, pmax(0, (3/2) * (p_vals - 1/6))), potencia, type = "b", col = "blue",
+     main = "Función de potencia (n = 100)",
+     xlab = "theta verdadero",
+     ylab = "Potencia")
+abline(v = theta0, col = "red", lty = 2)
+
+abline(h = alpha, col = "green", lty = 2)
+legend("bottomright",
+       legend = c("Potencia empírica", "theta0", "Nivel α = 0.05"),
+       col = c("blue", "red", "green"),
+       lty = c(1, 2, 2),
+       pch = c(1, NA, NA))
+
+```
+
+
+```{r, echo=FALSE}
+theta_vals <- pmin(1, pmax(0, (3/2) * (p_vals - 1/6)))
+
+fig <- plot_ly() %>%
+  add_trace(
+    x = theta_vals,
+    y = potencia,
+    type = 'scatter',
+    mode = 'lines+markers',
+    name = 'Potencia empírica',
+    line = list(color = 'blue')
+  ) %>%
+  add_trace(
+    x = c(theta0, theta0),
+    y = c(0, 1),
+    type = 'scatter',
+    mode = 'lines',
+    name = 'theta0 = 0.25',
+    line = list(color = 'red', dash = 'dash')
+  ) %>%
+  add_trace(
+    x = c(min(theta_vals), max(theta_vals)),
+    y = c(alpha, alpha),
+    type = 'scatter',
+    mode = 'lines',
+    name = 'Nivel α = 0.05',
+    line = list(color = 'green', dash = 'dash')
+  ) %>%
+  layout(
+    title = 'Función de potencia (n = 100)',
+    xaxis = list(title = 'theta verdadero'),
+    yaxis = list(title = 'Potencia'),
+    legend = list(x = 1, y = 0, xanchor = "right", yanchor = "bottom")
+  )
+
+fig
+
+```
